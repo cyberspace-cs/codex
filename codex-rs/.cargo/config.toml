@@ -9,3 +9,13 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
 
 [target.'cfg(all(windows, target_env = "gnu"))']
 rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
+
+# Raise the default stack size for Rust test threads on non-Windows targets.
+# Windows already gets an 8 MiB stack via the link-arg above; without an
+# equivalent here, `cargo test`/`cargo nextest run` on Linux/macOS crashes with
+# a stack overflow in a few codex-core tests (e.g.
+# agent::control::residency::tests::interrupted_v2_agent_is_lost_after_residency_eviction)
+# whose debug-build async state machines exceed the runtime default of 2 MiB.
+# This matches the 8 MiB policy already set by `just test` and rust-ci-full.
+[env]
+RUST_MIN_STACK = "8388608" # 8 MiB
