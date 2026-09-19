@@ -69,62 +69,82 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
 
 #[tokio::test]
 async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
-    let mut config = test_config().await;
+    let mut config = Box::new(test_config().await);
     let _ = config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
     let temp_home = tempfile::tempdir().expect("create temp home");
     config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
     config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
-    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+    let manager = Box::new(ThreadManager::with_models_provider_and_home_for_tests(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
-    let root = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
+    ));
+    let root = Box::pin(manager.start_thread(StartThreadOptions::new((*config).clone())))
         .await
         .expect("start root thread");
     let control = manager.agent_control();
     let state = control.upgrade().expect("thread manager should be live");
 
-    let first_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
-        .await
-        .expect("first resident slot");
-    let first =
-        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-1").await;
+    let first_slot = Box::pin(control.reserve_v2_residency_slot(
+        &state,
+        &config,
+        /*protected_thread_id*/ None,
+    ))
+    .await
+    .expect("first resident slot");
+    let first = Box::pin(spawn_v2_subagent(
+        &control,
+        &state,
+        (*config).clone(),
+        root.thread_id,
+        "worker-1",
+    ))
+    .await;
     first_slot.commit(first.thread_id);
-    mark_thread_interrupted(first.thread.as_ref()).await;
+    Box::pin(mark_thread_interrupted(first.thread.as_ref())).await;
 
-    let second_slot = control
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
-        .await
-        .expect("second resident slot should evict the first interrupted idle agent");
-    match manager.get_thread(first.thread_id).await {
+    let second_slot = Box::pin(control.reserve_v2_residency_slot(
+        &state,
+        &config,
+        /*protected_thread_id*/ None,
+    ))
+    .await
+    .expect("second resident slot should evict the first interrupted idle agent");
+    match Box::pin(manager.get_thread(first.thread_id)).await {
         Err(err) => match err.details() {
             CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
             _ => panic!("expected evicted thread to be missing, got {err:?}"),
         },
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
-    let second =
-        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-2").await;
+    let second = Box::pin(spawn_v2_subagent(
+        &control,
+        &state,
+        (*config).clone(),
+        root.thread_id,
+        "worker-2",
+    ))
+    .await;
     second_slot.commit(second.thread_id);
-    mark_thread_completed(second.thread.as_ref()).await;
+    Box::pin(mark_thread_completed(second.thread.as_ref())).await;
 
-    let err = control
-        .ensure_v2_agent_loaded(config, first.thread_id, /*parent*/ None)
-        .await
-        .expect_err("evicted interrupted agent should stay lost");
+    let err = Box::pin(control.ensure_v2_agent_loaded(
+        *config,
+        first.thread_id,
+        /*parent*/ None,
+    ))
+    .await
+    .expect_err("evicted interrupted agent should stay lost");
     match err.details() {
         CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
         _ => panic!("expected ThreadNotFound, got {err:?}"),
     }
 
-    assert!(manager.get_thread(root.thread_id).await.is_ok());
-    assert!(manager.get_thread(second.thread_id).await.is_ok());
-    match manager.get_thread(first.thread_id).await {
+    assert!(Box::pin(manager.get_thread(root.thread_id)).await.is_ok());
+    assert!(Box::pin(manager.get_thread(second.thread_id)).await.is_ok());
+    match Box::pin(manager.get_thread(first.thread_id)).await {
         Err(err) => match err.details() {
             CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
             _ => panic!("expected evicted thread to be missing, got {err:?}"),

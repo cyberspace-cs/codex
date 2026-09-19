@@ -970,7 +970,7 @@ impl Session {
         // - initialize thread persistence with new or resumed session info
         // - perform default shell discovery
         // - load history metadata (skipped for subagents)
-        let thread_persistence_fut = async {
+        let thread_persistence_fut = Box::pin(async {
             if config.ephemeral {
                 Ok::<_, anyhow::Error>((None, LiveThreadInitGuard::new(/*live_thread*/ None)))
             } else {
@@ -1067,8 +1067,8 @@ impl Session {
             "session_init.thread_persistence",
             otel.name = "session_init.thread_persistence",
             session_init.ephemeral = config.ephemeral,
-        ));
-        let state_db_fut = async {
+        )));
+        let state_db_fut = Box::pin(async {
             if config.ephemeral {
                 None
             } else if let Some(local_store) =
@@ -1083,7 +1083,7 @@ impl Session {
             "session_init.state_db",
             otel.name = "session_init.state_db",
             session_init.ephemeral = config.ephemeral,
-        ));
+        )));
 
         let mut mcp_auth_changes = auth_manager.auth_change_receiver();
         let auth_manager_clone = Arc::clone(&auth_manager);
@@ -1100,7 +1100,7 @@ impl Session {
             .and_then(|environment| environment.cwd.to_abs_path().ok())
             .map(|cwd| cwd.to_path_buf())
             .unwrap_or_else(|| session_configuration.cwd().to_path_buf());
-        let auth_and_mcp_fut = async move {
+        let auth_and_mcp_fut = Box::pin(async move {
             let auth = auth_manager_clone.auth().await;
             if config_for_mcp.features.plugin_recommendations_enabled() {
                 let plugins_config = config_for_mcp.plugins_config_input();
@@ -1136,7 +1136,7 @@ impl Session {
         .instrument(info_span!(
             "session_init.auth_mcp",
             otel.name = "session_init.auth_mcp",
-        ));
+        )));
 
         // Join all independent futures.
         let (thread_persistence_result, state_db_ctx, (auth, mcp_projection)) =
@@ -1146,7 +1146,7 @@ impl Session {
             error!("failed to initialize thread persistence: {e:#}");
             e
         })?;
-        let session_result: anyhow::Result<Arc<Self>> = async {
+        let session_result_fut = Box::pin(async {
             let rollout_path = if let Some(live_thread) = live_thread.as_ref() {
                 live_thread.local_rollout_path().await?
             } else {
@@ -1399,25 +1399,28 @@ impl Session {
             );
             let resolved_environments = turn_environments.snapshot().await;
             let agents_md_manager = Arc::new(AgentsMdManager::new(instructions));
-            let plugin_skill_warmup = warm_plugins_and_skills_for_session_init(
-                Arc::clone(&config),
-                Arc::clone(&plugins_manager),
-                Arc::clone(&skills_service),
-                &resolved_environments,
-                extensions.as_ref(),
-            )
-            .instrument(info_span!(
-                "session_init.plugin_skill_warmup",
-                otel.name = "session_init.plugin_skill_warmup",
-            ));
-            let thread_name_lookup =
+            let plugin_skill_warmup = Box::pin(
+                warm_plugins_and_skills_for_session_init(
+                    Arc::clone(&config),
+                    Arc::clone(&plugins_manager),
+                    Arc::clone(&skills_service),
+                    &resolved_environments,
+                    extensions.as_ref(),
+                )
+                .instrument(info_span!(
+                    "session_init.plugin_skill_warmup",
+                    otel.name = "session_init.plugin_skill_warmup",
+                )),
+            );
+            let thread_name_lookup = Box::pin(
                 thread_title_from_thread_store(live_thread.as_ref(), &thread_store, thread_id)
                     .instrument(info_span!(
                         "session_init.thread_name_lookup",
                         otel.name = "session_init.thread_name_lookup",
-                    ));
+                    )),
+            );
             let (instruction_refresh, plugin_skill_errors, thread_name) = tokio::join!(
-                agents_md_manager.refresh(config.as_ref(), &resolved_environments),
+                Box::pin(agents_md_manager.refresh(config.as_ref(), &resolved_environments)),
                 plugin_skill_warmup,
                 thread_name_lookup,
             );
@@ -1810,16 +1813,16 @@ impl Session {
             } else {
                 mcp_projection
             };
-            sess.install_initial_mcp_runtime(
+            Box::pin(sess.install_initial_mcp_runtime(
                 &session_configuration,
                 latest_auth,
                 mcp_projection,
                 &resolved_environments,
                 mcp_runtime_cwd,
-            )
+            ))
             .await?;
             sess.start_mcp_prewarm_worker(mcp_prewarm_rx, mcp_auth_changes);
-            sess.schedule_startup_prewarm(sess.get_prompt_base_instructions().await.text)
+            Box::pin(sess.schedule_startup_prewarm(sess.get_prompt_base_instructions().await.text))
                 .await;
             let session_start_source = match &initial_history {
                 InitialHistory::Forked(_) if forked_from_id.is_some() => {
@@ -1852,8 +1855,8 @@ impl Session {
                 state.queue_pending_session_start_source(session_start_source);
             }
             Ok(sess)
-        }
-        .await;
+        });
+        let session_result: anyhow::Result<Arc<Self>> = session_result_fut.await;
         match session_result {
             Ok(sess) => {
                 live_thread_init.commit();
