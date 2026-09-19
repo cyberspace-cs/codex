@@ -786,7 +786,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .permissions
         .set_permission_profile(PermissionProfile::read_only())
         .expect("read-only parent profile");
-    let harness = Box::pin(AgentControlHarness::new_with_config(home, config)).await;
+    let harness = Box::new(Box::pin(AgentControlHarness::new_with_config(home, config)).await);
     let client_mcp_extensions =
         ClientMcpExtensions::new([(OPENAI_FORM_EXTENSION_ID.to_string(), serde_json::json!({}))]);
     let root = Box::pin(harness
@@ -809,7 +809,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .await
         .expect("start root thread");
     let control = root.thread.session.services.agent_control.clone();
-    let parent_thread = match route {
+    let parent_thread = Box::new(match route {
         V2ReloadRoute::Sender => root.thread,
         V2ReloadRoute::NestedParent => {
             let parent = Box::pin(spawn_v2_reload_test_child(
@@ -825,7 +825,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
                 .await
                 .expect("nested parent should exist")
         }
-    };
+    });
     let parent_thread_id = parent_thread.session.thread_id;
     let inherited_instructions = Box::pin(parent_thread.session.inherited_instructions()).await;
     assert!(inherited_instructions.user.is_some());
@@ -833,34 +833,34 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
     let mut child_config = harness.config.clone();
     child_config.model = Some("gpt-5.6-luna".to_string());
     let spawned_agent =
-        Box::pin(spawn_v2_reload_test_child(&control, child_config, &parent_thread, "worker")).await;
+        Box::new(Box::pin(spawn_v2_reload_test_child(&control, child_config, &parent_thread, "worker")).await);
     let agent_path = spawned_agent
         .metadata
         .agent_path
         .clone()
         .expect("agent path");
-    let child_thread = Box::pin(harness
-        .manager
-        .get_thread(spawned_agent.thread_id))
-        .await
-        .expect("child thread should exist");
-    child_thread
+    let child_thread = Box::new(Box::pin(harness
+            .manager
+            .get_thread(spawned_agent.thread_id))
+            .await
+            .expect("child thread should exist"));
+    Box::pin(child_thread
         .inject_response_items(vec![assistant_message(
             "child persisted",
             Some(MessagePhase::FinalAnswer),
-        )])
+        )]))
         .await
         .expect("child rollout should persist with v2 metadata");
     Box::pin(child_thread
         .shutdown_and_wait())
         .await
         .expect("child thread should shut down");
-    let stored_child = Box::pin(child_thread
-        .read_thread(
-            /*include_archived*/ true, /*include_history*/ false,
-        ))
-        .await
-        .expect("child metadata should be readable");
+    let stored_child = Box::new(Box::pin(child_thread
+            .read_thread(
+                /*include_archived*/ true, /*include_history*/ false,
+            ))
+            .await
+            .expect("child metadata should be readable"));
     assert_eq!(stored_child.history_mode, ThreadHistoryMode::Paginated);
 
     assert!(
@@ -886,7 +886,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .cloned()
         .expect("ollama provider should be configured");
 
-    let mut parent_turn = Box::pin(parent_thread.session.new_default_turn()).await;
+    let mut parent_turn = Box::new(Box::pin(parent_thread.session.new_default_turn()).await);
     match route {
         V2ReloadRoute::Sender => Box::pin(control
             .ensure_v2_agent_loaded(sender_config, spawned_agent.thread_id, /*parent*/ None))
@@ -907,7 +907,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
                 .services
                 .turn_environments
                 .update_selections(std::slice::from_ref(&selection), &thread_config);
-            parent_turn = Box::pin(parent_thread.session.new_default_turn()).await;
+            *parent_turn = Box::pin(parent_thread.session.new_default_turn()).await;
             parent_thread.session.mark_interrupted();
             // The fixture has no task runner to finish the turn or consume child results.
             *parent_thread.session.active_turn.lock().await = None;
@@ -924,19 +924,19 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             assert!(Box::pin(harness.manager.get_thread(parent_thread_id)).await.is_err());
         }
     }
-    let reloaded_child = Box::pin(harness
-        .manager
-        .get_thread(spawned_agent.thread_id))
-        .await
-        .expect("reloaded child thread should exist");
-    let reloaded_instructions = Box::pin(reloaded_child.session.inherited_instructions()).await;
+    let reloaded_child = Box::new(Box::pin(harness
+            .manager
+            .get_thread(spawned_agent.thread_id))
+            .await
+            .expect("reloaded child thread should exist"));
+    let reloaded_instructions = Box::new(Box::pin(reloaded_child.session.inherited_instructions()).await);
     assert_eq!(
         (reloaded_instructions.user, reloaded_instructions.thread),
         (inherited_instructions.user, inherited_instructions.thread),
         "reloading a child must retain both parent snapshots, even if residency evicts the parent",
     );
     if matches!(route, V2ReloadRoute::NestedParent) {
-        let reloaded_turn = Box::pin(reloaded_child.session.new_default_turn()).await;
+        let reloaded_turn = Box::new(Box::pin(reloaded_child.session.new_default_turn()).await);
         assert_eq!(
             (
                 reloaded_turn.environments.to_selections(),

@@ -148,19 +148,19 @@ impl PreparedTurnInputSettings {
         };
         let turn_context = match kind {
             TurnStartKind::User | TurnStartKind::Recovery => Some(
-                session
-                    .new_turn_with_sub_id(submission_id.clone(), updates, options)
-                    .await?,
+                Box::pin(session
+                        .new_turn_with_sub_id(submission_id.clone(), updates, options))
+                        .await?,
             ),
             TurnStartKind::Automatic => {
-                session
-                    .new_turn_with_sub_id_if(
-                        submission_id.clone(),
-                        updates,
-                        options,
-                        |current, proposed| kind.permits_settings(current, proposed),
-                    )
-                    .await?
+                Box::pin(session
+                        .new_turn_with_sub_id_if(
+                            submission_id.clone(),
+                            updates,
+                            options,
+                            |current, proposed| kind.permits_settings(current, proposed),
+                        ))
+                        .await?
             }
         };
         let Some((turn_context, settings_snapshot)) = turn_context else {
@@ -206,7 +206,7 @@ pub(super) async fn handle(
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
     match mode {
-        TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
+        TurnInputMode::StartOrSteer => Box::pin(start_or_steer(session, request, submission_id)).await,
         TurnInputMode::StartIfIdle => {
             let kind = match &request.input {
                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
@@ -216,13 +216,13 @@ pub(super) async fn handle(
                 | SubmittedTurnInput::ResponseItem(_)
                 | SubmittedTurnInput::InterAgentCommunication(_) => TurnStartKind::Automatic,
             };
-            start_if_idle(
+            Box::pin(start_if_idle(
                 session,
                 request,
                 submission_id,
                 kind,
                 /*expected_previous_turn_id*/ None,
-            )
+            ))
             .await
         }
         TurnInputMode::ContinueIfIdle {
@@ -334,9 +334,9 @@ async fn start_or_steer(
                 };
                 Some(admission)
             };
-            let Some(turn_context) = settings
-                .apply_started(session, submission_id.clone(), TurnStartKind::User)
-                .await?
+            let Some(turn_context) = Box::pin(settings
+                    .apply_started(session, submission_id.clone(), TurnStartKind::User))
+                    .await?
             else {
                 unreachable!("explicit user input can enter Plan mode");
             };
@@ -454,9 +454,9 @@ async fn start_if_idle(
             return Err(error);
         }
     };
-    let turn_context = match settings
-        .apply_started(session, submission_id.clone(), kind)
-        .await
+    let turn_context = match Box::pin(settings
+            .apply_started(session, submission_id.clone(), kind))
+            .await
     {
         Ok(Some(turn_context)) => turn_context,
         Ok(None) => {

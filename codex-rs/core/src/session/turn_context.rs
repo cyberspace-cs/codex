@@ -932,9 +932,9 @@ impl Session {
         updates: SessionSettingsUpdate,
         options: NewTurnContextOptions,
     ) -> CodexResult<(Arc<TurnContext>, ThreadSettingsSnapshot)> {
-        let Some((turn_context, snapshot)) = self
-            .new_turn_with_sub_id_if(sub_id, updates, options, |_, _| true)
-            .await?
+        let Some((turn_context, snapshot)) = Box::pin(self
+                .new_turn_with_sub_id_if(sub_id, updates, options, |_, _| true))
+                .await?
         else {
             unreachable!("unconditional turn construction must accept valid settings");
         };
@@ -977,9 +977,9 @@ impl Session {
         if let Some(service_tier) = service_tier_for_turn {
             Arc::make_mut(&mut configuration.step_settings).service_tier = Some(service_tier);
         }
-        let turn_context = self
-            .new_turn_from_configuration(sub_id, configuration, options)
-            .await;
+        let turn_context = Box::pin(self
+                .new_turn_from_configuration(sub_id, configuration, options))
+                .await;
         Ok(Some((turn_context, commit.snapshot)))
     }
 
@@ -990,14 +990,14 @@ impl Session {
         session_configuration: SessionConfiguration,
         options: NewTurnContextOptions,
     ) -> Arc<TurnContext> {
-        self.new_turn_context_from_configuration(
-            sub_id,
-            session_configuration,
-            options,
-            TurnMultiAgentRuntime::ResolveAndStore,
-            self.git_enrichment_policy,
-        )
-        .await
+        Box::pin(self.new_turn_context_from_configuration(
+                sub_id,
+                session_configuration,
+                options,
+                TurnMultiAgentRuntime::ResolveAndStore,
+                self.git_enrichment_policy,
+            ))
+            .await
     }
 
     async fn new_startup_prewarm_turn_from_configuration(
@@ -1005,14 +1005,14 @@ impl Session {
         sub_id: String,
         session_configuration: SessionConfiguration,
     ) -> Arc<TurnContext> {
-        self.new_turn_context_from_configuration(
-            sub_id,
-            session_configuration,
-            NewTurnContextOptions::default(),
-            TurnMultiAgentRuntime::Preview,
-            GitEnrichmentPolicy::Skip,
-        )
-        .await
+        Box::pin(self.new_turn_context_from_configuration(
+                sub_id,
+                session_configuration,
+                NewTurnContextOptions::default(),
+                TurnMultiAgentRuntime::Preview,
+                GitEnrichmentPolicy::Skip,
+            ))
+            .await
     }
 
     #[instrument(name = "turn_context.build", level = "trace", skip_all)]

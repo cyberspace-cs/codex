@@ -1397,7 +1397,7 @@ impl Session {
                 environment_selections,
                 &session_configuration.inferred_environment_config(),
             );
-            let resolved_environments = turn_environments.snapshot().await;
+            let resolved_environments = Box::new(turn_environments.snapshot().await);
             let agents_md_manager = Arc::new(AgentsMdManager::new(instructions));
             let plugin_skill_warmup = Box::pin(
                 warm_plugins_and_skills_for_session_init(
